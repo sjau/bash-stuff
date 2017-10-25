@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+
+# kate: syntax bash
+
+# Check if is root
+if [ "$EUID" -ne 0 ]; then
+    printf '%s\n' "Please run as root"
+    exit
+fi
+
+# Create proper sources.list
+sourcesList="
+#------------------------------------------------------------------------------#
+#                   OFFICIAL DEBIAN REPOS                                      #
+#------------------------------------------------------------------------------#
+
+###### Debian Main Repos
+deb http://ftp.ch.debian.org/debian/ stable main contrib non-free
+deb-src http://ftp.ch.debian.org/debian/ stable main contrib non-free
+
+deb http://ftp.ch.debian.org/debian/ stable-updates main contrib non-free
+deb-src http://ftp.ch.debian.org/debian/ stable-updates main contrib non-free
+
+deb http://security.debian.org/ stable/updates main
+deb-src http://security.debian.org/ stable/updates main"
+
+printf '%s\n' "${sourcesList}" >> /etc/apt/sources.list
+
+# Update
+apt update
+
+# Install dependencies for ZFS
+apt install -y debootstrap gdisk linux-headers-$(uname -r) openssh-server build-essential autoconf libtool gawk alien fakeroot zlib1g-dev uuid-dev libattr1-dev libblkid-dev libselinux-dev libudev-dev libssl-dev parted lsscsi ksh git gdebi
+
+# Allow password login
+sed -i "s/PasswordAuthentication no/PasswordAuthentication yes/g" "/etc/ssh/sshd_config"
+systemctl restart ssh
+
+# Set password
+passwd
+printf '%s\n' "Root login by SSH is now possible"
+
+# Clone Git
+mkdir -p "/root/zfs"
+cd "/root/zfs" || { printf '%s\n' "Couldn't change dir. Abort."; exit; }
+git clone https://github.com/zfsonlinux/spl
+git clone https://github.com/zfsonlinux/zfs
+
+# Build spl
+cd "/root/zfs/spl" || { printf '%s\n' "Couldn't change dir. Abort."; exit; }
+autoreconf --force --install
+./configure
+make pkg-utils deb-dkms
+for file in *.deb; do sudo gdebi -q --non-interactive "${file}"; done
+
+# Build zfs
+cd "/root/zfs/zfs" || { printf '%s\n' "Couldn't change dir. Abort."; exit; }
+autoreconf --force --install
+./configure --with-config=srpm
+make pkg-utils deb-dkms
+for file in *.deb; do sudo gdebi -q --non-interactive "${file}"; done
+
+# Load zfs
+modprobe zfs
+
+# Partition the disk
+ls -al /dev/disk/by-id/
+read -r -e -p "Enter the path to the device: " -i "/dev/sda" rootDev
+    # Set /boot to 250MB
+bootSectors=$((250 * 2048))
+    # Turn off LVM
+vgchange -a n
+    # Remove partition info
+dd if="/dev/zero" of="${rootDev}" bs=512 count=10000
+    # Do the partitioning
+sfdisk -f "${rootDev}" << EOF
+        label: dos
+        device: ${rootDev}
+        unit: sectors
+        ${rootDev}1 : start=2048, size=${bootSectors}, type=83, bootable
+        ${rootDev}2 : type=83
+EOF
+
+# Create Filesystems
+zfsPool="tankie"
+mkfs.ext4 "${rootDev}1" -L "DEBIAN_BOOT"
+zpool create -o ashift=12 -O canmount=off -O mountpoint=/ -R /mnt "${zfsPool}" "${rootDev}2"
+zfs create -o encryption=aes-256-gcm -o keyformat=passphrase -o canmount=off -o mountpoint=none -o atime=off ${zfsPool}/encZFS
+zfs create -o canmount=noauto -o mountpoint=/ -o com.sun:auto-snapshot=true "${zfsPool}/encZFS/Root"
+zfs mount "${zfsPool}/encZFS/Root"
+zpool set bootfs="${zfsPool}/encZFS/Root" "${zfsPool}"
+
+#zfs create -o mountpoint=legacy -o com.sun:auto-snapshot=true "${zfsPool}/encZFS/Media"
+#zfs create -o mountpoint=legacy -o com.sun:auto-snapshot=true "${zfsPool}/encZFS/VMs"
+# Enable compression on Root dataset
+#zfs set compression=lz4 ${zfsPool}/encZFS/Root
+# Disable some snapshots in Root dataset
+#zfs set com.sun:auto-snapshot:monthly=false ${zfsPool}/encZFS/Root
+# Disable some snapshots in Media dataset
+#zfs set com.sun:auto-snapshot:frequent=false ${zfsPool}/encZFS/Media
+#zfs set com.sun:auto-snapshot:daily=false ${zfsPool}/encZFS/Media
+#zfs set com.sun:auto-snapshot:weekly=false ${zfsPool}/encZFS/Media
+#zfs set com.sun:auto-snapshot:monthly=false ${zfsPool}/encZFS/Media
+# Disable some snapshots in VMs dataset
+#zfs set com.sun:auto-snapshot:weekly=false ${zfsPool}/encZFS/VMs
+#zfs set com.sun:auto-snapshot:monthly=false ${zfsPool}/encZFS/VMs
+
+# Create more mountpoints
+mkdir -p "/mnt/boot"
+mkdir -p "/mnt/root"
+chmod 0700 "/mnt/root"
+mkdir -p "/mnt/mnt/encZFS/"{Media,VMs}
+#mount -t zfs "${zfsPool}/encZFS/Media" "/mnt/mnt/encZFS/Media"
+#mount -t zfs "${zfsPool}/encZFS/VMs" "/mnt/mnt/encZFS/VMs"
+mount -t ext4 "${rootDev}1" "/mnt/boot"
+
+# Install Minimal System
+mkdir -p "/mnt/var/tmp"
+chmod 1777 "/mnt/var/tmp"
+debootstrap stretch "/mnt"
+zfs set devices=off "${zfsPool}"
+
+# Configure system
+printf '%s' "zfsdebian" > "/mnt/etc/hostname"
+printf '%s\n' "127.0.0.1 zfsdebian" >> "/mnt/etc/hosts"
+ip addr show
+read -r -e -p "Enter the name of the ethernet device: " -i "enp0s3" ethDev
+printf '%s\n%s\n' "auto ${ethDev}" "iface ${ethDev} inet dhcp" >> "/mnt/etc/network/interfaces.d/${ethDev}"
+
+# Bind the virtual filesystem from the LiveCD
+mount --rbind /dev  /mnt/dev
+mount --rbind /proc /mnt/proc
+mount --rbind /sys  /mnt/sys
+
+# Copy chroot-install to zfs root
+cp -a /root/chroot-install /mnt/root/
+
+# Copy sources.list to zfs root
+cp -a /etc/apt/sources.list /mnt/etc/apt/
+
+# Enter chroot
+printf '%s\n' "Entering chroot - run the chroot-install script then"
+chroot /mnt /bin/bash --login

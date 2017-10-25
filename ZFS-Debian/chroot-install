@@ -1,0 +1,53 @@
+!#!/usr/bin/env bash
+
+ln -s /proc/self/mounts /etc/mtab
+apt update
+
+apt install -y locales
+dpkg-reconfigure locales
+dpkg-reconfigure tzdata
+apt install --yes linux-image-amd64 debootstrap gdisk linux-headers-$(uname -r) openssh-server build-essential autoconf libtool gawk alien fakeroot zlib1g-dev uuid-dev libattr1-dev libblkid-dev libselinux-dev libudev-dev libssl-dev parted lsscsi ksh git gdebi dkms
+
+# Allow password login
+sed -i "s/PasswordAuthentication no/PasswordAuthentication yes/g" "/etc/ssh/sshd_config"
+systemctl restart ssh
+
+# Set password
+passwd
+printf '%s\n' "Root login by SSH is now possible"
+
+# Clone Git
+mkdir -p "/root/zfs"
+cd "/root/zfs" || { printf '%s\n' "Couldn't change dir. Abort."; exit; }
+git clone https://github.com/zfsonlinux/spl
+git clone https://github.com/zfsonlinux/zfs
+
+# Build spl
+cd "/root/zfs/spl" || { printf '%s\n' "Couldn't change dir. Abort."; exit; }
+autoreconf --force --install
+./configure
+make pkg-utils deb-dkms
+for file in *.deb; do sudo gdebi -q --non-interactive "${file}"; done
+
+# Build zfs
+cd "/root/zfs/zfs" || { printf '%s\n' "Couldn't change dir. Abort."; exit; }
+autoreconf --force --install
+./configure --with-config=srpm
+make pkg-utils deb-dkms
+for file in *.deb; do sudo gdebi -q --non-interactive "${file}"; done
+
+# Load zfs
+modprobe zfs
+
+# Install Grub
+apt install --yes grub-pc
+
+# Refersh initrd
+update-initramfs -u -k all
+
+# Update Grub
+update-grub
+
+ls -al /dev/disk/by-id/
+read -r -e -p "Where to isntall grub to? " -i "/dev/sda" rootDev
+grub-install "${rootDev}"

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+# Get user input
+read -r -e -p "Enter path where the qemu disk image should be created: " -i "/mnt/encZFS/Media/debianZFS.img" qemuImg
+read -r -e -p "Enter path debian live iso: " -i "/mnt/encZFS/Media/debian-live-9.2.0-amd64-xfce.iso" qemuISO
+
+# Create qemu image
+qemu-img create -f qcow2 "${qemuImg}" 20G
+
+# Create startup scripts
+
+
+#!/usr/bin/env bash
+qemuPath="${qemuImg%/*}"
+printf '%s\n\n%s\n' "#!/usr/bin/env bash" "qemu-system-x86_64 -m 4096 -boot d -enable-kvm -smp 2 -net nic -net user -hda ${qemuImg} -redir tcp:2223::22 -usb -device usb-tablet -cdrom ${qemuISO}" > "${qemuPath}/qemuDebian-with-Iso"
+printf '%s\n\n%s\n' "#!/usr/bin/env bash" "qemu-system-x86_64 -m 4096 -boot d -enable-kvm -smp 2 -net nic -net user -hda ${qemuImg} -redir tcp:2223::22 -usb -device usb-tablet " > "${qemuPath}/qemuDebian-without-Iso"
+chmod 0755 "${qemuPath}/qemuDebian-with-Iso"
+chmod 0755 "${qemuPath}/qemuDebian-without-Iso"
