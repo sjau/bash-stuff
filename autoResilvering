@@ -3,7 +3,7 @@
 poolName="tank"
 
 devices[0]="usb-TOSHIBA_External_USB_3.0_20170612010552F-0:0"
-devices[1]="usb-TOSHIBA_External_USB_3.0_2012110725463-0:0"
+devices[1]="usb-TOSHIBA_External_USB_3.0_2012110725463-0:0-part1"
 
 for i in "${devices[@]}"; do
     poolStatus=$(zpool status | grep "${i}")

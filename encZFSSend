@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+
+# kate: syntax bash
+
+# Syntax:  source dataset, source amount of snapshots to keep, remote server info, remote dataset, remote amount of snapshots to keep
+# individual entries are seperated by space
+#backupDS[0]="tank/encZFS/Nixos 720 root@10.200.0.3 serviTank/encZFS/BU/subi 4320"
+#backupDS[1]="tank/encZFS/Media 168 root@10.200.0.3 serviTank/encZFS/BU/subi 720"
+#backupDS[2]="tank/encZFS/VMs 168 root@10.200.0.3 serviTank/encZFS/BU/subi 720"
+
+backupDS[0]="tank/encZFS/Nixos 720 root@10.0.0.3 serviTank/encZFS/BU/subi 4320"
+backupDS[1]="tank/encZFS/Media 168 root@10.0.0.3 serviTank/encZFS/BU/subi 720"
+backupDS[2]="tank/encZFS/VMs 168 root@10.0.0.3 serviTank/encZFS/BU/subi 720"
+
+
+dsPrefix="encZFSSend"       # Set a prefix for the snapshot: pool/dataset@prefix_yyyy-mm-dd_hh-mm
+
+useUTC="y"                  # Set whether to use UTC in timestamp or not... when travelling it prevents conflicts
+
+#------------------------------------------------------------------------------#
+#                                                                              #
+#                              BELOW BE DRAGONS                                #
+#                                                                              #
+#------------------------------------------------------------------------------#
+
+red=$(tput setaf 1)
+green=$(tput setaf 2)
+yellow=$(tput setaf 3)
+reset=$(tput sgr0)
+
+_Info () {
+    printf '%sInfo:%s %s\n' "${yellow}" "${reset}" "${1}"
+}
+_Success () {
+    printf '%sSuccess:%s %s\n' "${green}" "${reset}" "${1}"
+}
+_Error () {
+    printf '%sError:%s %s\n' "${red}" "${reset}" "${1}"
+    exit 1
+}
+
+takeSnapshot () {
+    _Info "Taking snapshot of ${srcDS}"
+    # Take Snapshot
+    zfs snapshot "${srcDS}@${dsPrefix}_${now}" && _Success "Snapshot created" || _Error "Failed to create snapshot"
+    # Create Bookmark
+    zfs bookmark "${srcDS}@${dsPrefix}_${now}" "${srcDS}#${dsPrefix}_${now}" && _Success "Bookmark created" || _Error "Failed to create bookmark"
+}
+
+getLatestDstDS() {
+    latestDS=""
+    dsName="${srcDS##*/}"
+    latestDS=$(ssh "${dstSrv}" "zfs list -t snapshot -o name -s creation -r ${dstDS}/${dsName} | tail -1")
+}
+
+sendSnapshotToDest() {
+    if [[ "${latestDS}" == *"${dstDS}/${dsName}"* ]]; then
+        # Send incremental snapshot from local bookmark as local snapshot may have been destroyed already
+        incDS="${latestDS##*@}"
+echo "$latestDS"
+echo "zfs send -wi '#${incDS}' '${srcDS}@${dsPrefix}_${now}' | ssh '${dstSrv}' 'zfs receive ${dstDS}/${dsName}'"
+        zfs send -wi "#${incDS}" "${srcDS}@${dsPrefix}_${now}" | ssh "${dstSrv}" "zfs receive ${dstDS}/${dsName}"
+    else
+        # Create new dataset
+        zfs send -wR "${srcDS}@${dsPrefix}_${now}" | ssh "${dstSrv}" "zfs receive ${dstDS}/${dsName}"
+    fi
+}
+
+getNumberOfSrcSnaps() {
+    curSnaps=$(zfs list -t snapshot -o name -s creation -r "${srcDS}" | wc -l)
+}
+
+rmSrcSnapshots () {
+    getNumberOfSrcSnaps
+    while [[ ${getNumberOfSrcSnaps} -gt ${srcAmount} ]]; do
+        oldestSnap=$(zfs list -t snapshot -o name -s creation -r "${srcDS}" | head -2 | tail -1)
+#        zfs destroy "${oldestSnap}"
+        echo "zfs destroy '${oldestSnap}'"
+        getNumberOfSrcSnaps
+    done
+}
+
+getNumberOfDstSnaps() {
+    curSnaps=$(ssh "${dstSrv}" "zfs list -t snapshot -o name -s creation -r '${dstDS}' | wc -l")
+}
+
+rmDstSnapshots() {
+    getNumberOfDstSnaps
+    while [[ ${getNumberOfDstSnaps} -gt ${dstAmount} ]]; do
+        oldestSnap=$(ssh "${dstSrv}" "zfs list -t snapshot -o name -s creation -r '${dstDS}' | head -2 | tail -1")
+#        ssh "${dstSrv}" "zfs destroy '${oldestSnap}'"
+        echo "ssh '${dstSrv}' 'zfs destroy ${oldestSnap}'"
+        getNumberOfDstSnaps
+    done
+}
+
+
+# Get current time/date
+if [[ "${useUTC}" = "y" ]]; then utc="-u"; fi
+now=$(date ${utc} '+%Y-%m-%d_%H-%M')
+
+# First loop, take the snapshots
+for ds in "${backupDS[@]}"; do
+    while read -r srcDS srcAmount dstSrv dstDS dstAmount; do
+        takeSnapshot
+    done <<< "${ds}"
+done
+
+# Second loop, send the snapshots and remove surplus snapshots
+for ds in "${backupDS[@]}"; do
+    while read -r srcDS srcAmount dstSrv dstDS dstAmount; do
+        # First, send snapshot to destination
+        getLatestDstDS
+        sendSnapshotToDest
+        # Second, remove surplus snapshots on source
+#        rmSrcSnapshots
+        # Last, remove surplus snapshots on destination
+#        rmDstSnapshots
+    done <<< "${ds}"
+done

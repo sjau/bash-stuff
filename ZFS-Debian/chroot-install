@@ -3,6 +3,10 @@
 ln -s /proc/self/mounts /etc/mtab
 apt update
 
+chmod 1777 /tmp
+chmod 1777 /var/tmp
+chmod 0755 /var/cache
+
 apt install -y locales
 dpkg-reconfigure locales
 dpkg-reconfigure tzdata
@@ -51,3 +55,11 @@ update-grub
 ls -al /dev/disk/by-id/
 read -r -e -p "Where to isntall grub to? " -i "/dev/sda" rootDev
 grub-install "${rootDev}"
+
+# Unpack initrd
+for f in "/boot/initrd.img-"*; do
+    rm -Rf "/tmp/initrd"
+    mkdir "/tmp/initrd"
+    cd "/tmp/initrd"
+    gzip -cd "${f}" | cpio -i
+done

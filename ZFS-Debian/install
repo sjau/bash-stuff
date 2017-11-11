@@ -89,29 +89,21 @@ zfs create -o encryption=aes-256-gcm -o keyformat=passphrase -o canmount=off -o 
 zfs create -o canmount=noauto -o mountpoint=/ -o com.sun:auto-snapshot=true "${zfsPool}/encZFS/Root"
 zfs mount "${zfsPool}/encZFS/Root"
 zpool set bootfs="${zfsPool}/encZFS/Root" "${zfsPool}"
-
-#zfs create -o mountpoint=legacy -o com.sun:auto-snapshot=true "${zfsPool}/encZFS/Media"
-#zfs create -o mountpoint=legacy -o com.sun:auto-snapshot=true "${zfsPool}/encZFS/VMs"
+# Create additional datasets
+zfs create -o mountpoint="/var/lib/vz"                        "${zfsPool}/encZFS/VMs"
+zfs create -o canmount=off -o setuid=off  -o exec=off         "${zfsPool}/encZFS/transient"
+zfs create -o mountpoint="/tmp"                               "${zfsPool}/encZFS/transient/tmp"
+zfs create -o mountpoint="/var/tmp"                           "${zfsPool}/encZFS/transient/vartmp"
+zfs create -o mountpoint="/var/cache"                         "${zfsPool}/encZFS/transient/varcache"
 # Enable compression on Root dataset
-#zfs set compression=lz4 ${zfsPool}/encZFS/Root
+zfs set compression=lz4 "${zfsPool}/encZFS/Root"
 # Disable some snapshots in Root dataset
-#zfs set com.sun:auto-snapshot:monthly=false ${zfsPool}/encZFS/Root
-# Disable some snapshots in Media dataset
-#zfs set com.sun:auto-snapshot:frequent=false ${zfsPool}/encZFS/Media
-#zfs set com.sun:auto-snapshot:daily=false ${zfsPool}/encZFS/Media
-#zfs set com.sun:auto-snapshot:weekly=false ${zfsPool}/encZFS/Media
-#zfs set com.sun:auto-snapshot:monthly=false ${zfsPool}/encZFS/Media
-# Disable some snapshots in VMs dataset
-#zfs set com.sun:auto-snapshot:weekly=false ${zfsPool}/encZFS/VMs
-#zfs set com.sun:auto-snapshot:monthly=false ${zfsPool}/encZFS/VMs
+zfs set com.sun:auto-snapshot:monthly=false ${zfsPool}/encZFS/Root
 
 # Create more mountpoints
 mkdir -p "/mnt/boot"
 mkdir -p "/mnt/root"
 chmod 0700 "/mnt/root"
-mkdir -p "/mnt/mnt/encZFS/"{Media,VMs}
-#mount -t zfs "${zfsPool}/encZFS/Media" "/mnt/mnt/encZFS/Media"
-#mount -t zfs "${zfsPool}/encZFS/VMs" "/mnt/mnt/encZFS/VMs"
 mount -t ext4 "${rootDev}1" "/mnt/boot"
 
 # Install Minimal System
